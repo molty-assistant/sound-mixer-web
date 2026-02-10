@@ -497,6 +497,25 @@ let audioCtx = null;
 let masterGain = null;
 const soundNodes = {};  // id -> { gain, sources[], active, volume, cleanup }
 
+/* Audio file mapping for nature sounds (CC0 from Freesound.org) */
+const SOUND_FILES = {
+  rain:      'sounds/rain.mp3',
+  thunder:   'sounds/thunder.mp3',
+  ocean:     'sounds/ocean.mp3',
+  forest:    'sounds/forest.mp3',
+  wind:      'sounds/wind.mp3',
+  fireplace: 'sounds/fireplace.mp3',
+  birds:     'sounds/birds.mp3',
+  creek:     'sounds/creek.mp3',
+  fan:       'sounds/fan.mp3',
+};
+
+/* Synthesized noise types (Web Audio API — these sound great already) */
+const SYNTH_NOISE = ['whitenoise', 'pinknoise', 'brownnoise'];
+
+/* Cache for decoded audio buffers */
+const audioBuffers = {};
+
 function ensureAudioCtx() {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -509,7 +528,24 @@ function ensureAudioCtx() {
   }
 }
 
-/* --- Noise buffer generators --- */
+/* --- Load and decode an audio file --- */
+async function loadAudioBuffer(id) {
+  if (audioBuffers[id]) return audioBuffers[id];
+  const url = SOUND_FILES[id];
+  if (!url) return null;
+  try {
+    const response = await fetch(url);
+    const arrayBuffer = await response.arrayBuffer();
+    const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+    audioBuffers[id] = decoded;
+    return decoded;
+  } catch (e) {
+    console.warn(`Failed to load audio for ${id}:`, e);
+    return null;
+  }
+}
+
+/* --- Noise buffer generators (for white/pink/brown noise only) --- */
 function createNoiseBuffer(type) {
   const sr = audioCtx.sampleRate;
   const len = sr * 4; // 4 second loop
@@ -549,441 +585,31 @@ function makeNoiseSource(buffer) {
   return src;
 }
 
-/* --- Sound synthesizers --- */
-function createSoundGraph(id, gainNode) {
+/* --- Create sound graph for synthesized noise only --- */
+function createNoiseGraph(id, gainNode) {
   const sources = [];
-  const cleanups = [];
+  const noiseType = id.replace('noise', '');
+  const buf = createNoiseBuffer(noiseType);
+  const src = makeNoiseSource(buf);
+  src.connect(gainNode);
+  sources.push(src);
+  return { sources, cleanups: [] };
+}
 
-  function noiseSource(type) {
-    const buf = createNoiseBuffer(type);
-    const src = makeNoiseSource(buf);
-    sources.push(src);
-    return src;
-  }
-
-  switch (id) {
-    case 'whitenoise': {
-      const src = noiseSource('white');
-      src.connect(gainNode);
-      break;
-    }
-    case 'pinknoise': {
-      const src = noiseSource('pink');
-      src.connect(gainNode);
-      break;
-    }
-    case 'brownnoise': {
-      const src = noiseSource('brown');
-      src.connect(gainNode);
-      break;
-    }
-    case 'rain': {
-      // Base: filtered noise
-      const src = noiseSource('white');
-      const bp = audioCtx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 1800;
-      bp.Q.value = 0.5;
-      const hp = audioCtx.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.value = 400;
-      src.connect(bp).connect(hp).connect(gainNode);
-
-      // Droplet bursts
-      const dropletInterval = setInterval(() => {
-        if (audioCtx.state !== 'running') return;
-        const numDrops = Math.floor(Math.random() * 4) + 1;
-        for (let d = 0; d < numDrops; d++) {
-          setTimeout(() => {
-            const osc = audioCtx.createOscillator();
-            const g = audioCtx.createGain();
-            const f = 2000 + Math.random() * 4000;
-            osc.frequency.setValueAtTime(f, audioCtx.currentTime);
-            osc.frequency.exponentialRampToValueAtTime(f * 0.3, audioCtx.currentTime + 0.04);
-            g.gain.setValueAtTime(0.03, audioCtx.currentTime);
-            g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.04);
-            osc.connect(g).connect(gainNode);
-            osc.start();
-            osc.stop(audioCtx.currentTime + 0.05);
-          }, Math.random() * 200);
-        }
-      }, 150);
-      cleanups.push(() => clearInterval(dropletInterval));
-      break;
-    }
-    case 'thunder': {
-      // Low rumble
-      const src = noiseSource('brown');
-      const lp = audioCtx.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.value = 150;
-      const rumbleGain = audioCtx.createGain();
-      rumbleGain.gain.value = 1.5;
-      src.connect(lp).connect(rumbleGain).connect(gainNode);
-
-      // Mid rumble layer
-      const src2 = noiseSource('brown');
-      const bp = audioCtx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 80;
-      bp.Q.value = 0.5;
-      const midGain = audioCtx.createGain();
-      midGain.gain.value = 0.5;
-      src2.connect(bp).connect(midGain).connect(gainNode);
-
-      // Occasional booms
-      const boomInterval = setInterval(() => {
-        if (audioCtx.state !== 'running') return;
-        if (Math.random() > 0.3) return; // ~30% chance each 3s
-        const t = audioCtx.currentTime;
-        const boomBuf = createNoiseBuffer('brown');
-        const boomSrc = audioCtx.createBufferSource();
-        boomSrc.buffer = boomBuf;
-        const boomLp = audioCtx.createBiquadFilter();
-        boomLp.type = 'lowpass';
-        boomLp.frequency.value = 100;
-        const boomGain = audioCtx.createGain();
-        boomGain.gain.setValueAtTime(0.001, t);
-        boomGain.gain.exponentialRampToValueAtTime(2.0, t + 0.1);
-        boomGain.gain.exponentialRampToValueAtTime(0.3, t + 0.5);
-        boomGain.gain.exponentialRampToValueAtTime(0.001, t + 2.5);
-        boomSrc.connect(boomLp).connect(boomGain).connect(gainNode);
-        boomSrc.start(t);
-        boomSrc.stop(t + 3);
-      }, 3000);
-      cleanups.push(() => clearInterval(boomInterval));
-      break;
-    }
-    case 'ocean': {
-      // Noise base with wave modulation
-      const src = noiseSource('pink');
-      const bp = audioCtx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 500;
-      bp.Q.value = 0.3;
-      const waveGain = audioCtx.createGain();
-      waveGain.gain.value = 0.5;
-
-      // LFO for wave motion
-      const lfo = audioCtx.createOscillator();
-      lfo.type = 'sine';
-      lfo.frequency.value = 0.08; // slow waves ~8s cycle
-      const lfoGain = audioCtx.createGain();
-      lfoGain.gain.value = 0.5;
-      lfo.connect(lfoGain).connect(waveGain.gain);
-      lfo.start();
-      sources.push(lfo);
-
-      src.connect(bp).connect(waveGain).connect(gainNode);
-
-      // Second wave layer (slightly offset)
-      const src2 = noiseSource('brown');
-      const lp2 = audioCtx.createBiquadFilter();
-      lp2.type = 'lowpass';
-      lp2.frequency.value = 300;
-      const waveGain2 = audioCtx.createGain();
-      waveGain2.gain.value = 0.3;
-      const lfo2 = audioCtx.createOscillator();
-      lfo2.type = 'sine';
-      lfo2.frequency.value = 0.06;
-      const lfoGain2 = audioCtx.createGain();
-      lfoGain2.gain.value = 0.3;
-      lfo2.connect(lfoGain2).connect(waveGain2.gain);
-      lfo2.start();
-      sources.push(lfo2);
-      src2.connect(lp2).connect(waveGain2).connect(gainNode);
-
-      // Occasional wave crash
-      const crashInterval = setInterval(() => {
-        if (audioCtx.state !== 'running') return;
-        if (Math.random() > 0.4) return;
-        const t = audioCtx.currentTime;
-        const cBuf = createNoiseBuffer('white');
-        const cSrc = audioCtx.createBufferSource();
-        cSrc.buffer = cBuf;
-        const cBp = audioCtx.createBiquadFilter();
-        cBp.type = 'bandpass';
-        cBp.frequency.value = 800;
-        cBp.Q.value = 0.3;
-        const cGain = audioCtx.createGain();
-        cGain.gain.setValueAtTime(0.001, t);
-        cGain.gain.exponentialRampToValueAtTime(0.15, t + 0.5);
-        cGain.gain.exponentialRampToValueAtTime(0.001, t + 2.5);
-        cSrc.connect(cBp).connect(cGain).connect(gainNode);
-        cSrc.start(t);
-        cSrc.stop(t + 3);
-      }, 4000);
-      cleanups.push(() => clearInterval(crashInterval));
-      break;
-    }
-    case 'forest': {
-      // Gentle filtered noise
-      const src = noiseSource('pink');
-      const bp = audioCtx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 800;
-      bp.Q.value = 0.2;
-      const envGain = audioCtx.createGain();
-      envGain.gain.value = 0.6;
-
-      // Subtle slow modulation
-      const lfo = audioCtx.createOscillator();
-      lfo.type = 'sine';
-      lfo.frequency.value = 0.15;
-      const lfoGain = audioCtx.createGain();
-      lfoGain.gain.value = 0.2;
-      lfo.connect(lfoGain).connect(envGain.gain);
-      lfo.start();
-      sources.push(lfo);
-
-      src.connect(bp).connect(envGain).connect(gainNode);
-
-      // Low rustle layer
-      const src2 = noiseSource('brown');
-      const lp = audioCtx.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.value = 200;
-      const rustleGain = audioCtx.createGain();
-      rustleGain.gain.value = 0.15;
-      src2.connect(lp).connect(rustleGain).connect(gainNode);
-      break;
-    }
-    case 'wind': {
-      // Noise with slow amplitude wandering
-      const src = noiseSource('pink');
-      const bp = audioCtx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 600;
-      bp.Q.value = 0.3;
-      const windGain = audioCtx.createGain();
-      windGain.gain.value = 0.5;
-
-      // Very slow wandering LFO
-      const lfo = audioCtx.createOscillator();
-      lfo.type = 'sine';
-      lfo.frequency.value = 0.05;
-      const lfoGain = audioCtx.createGain();
-      lfoGain.gain.value = 0.45;
-      lfo.connect(lfoGain).connect(windGain.gain);
-      lfo.start();
-      sources.push(lfo);
-
-      src.connect(bp).connect(windGain).connect(gainNode);
-
-      // Higher whistle layer
-      const src2 = noiseSource('white');
-      const hp = audioCtx.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.value = 3000;
-      const whistleGain = audioCtx.createGain();
-      whistleGain.gain.value = 0.04;
-      const lfo2 = audioCtx.createOscillator();
-      lfo2.type = 'sine';
-      lfo2.frequency.value = 0.03;
-      const lfoGain2 = audioCtx.createGain();
-      lfoGain2.gain.value = 0.03;
-      lfo2.connect(lfoGain2).connect(whistleGain.gain);
-      lfo2.start();
-      sources.push(lfo2);
-      src2.connect(hp).connect(whistleGain).connect(gainNode);
-      break;
-    }
-    case 'fireplace': {
-      // Base crackle
-      const src = noiseSource('brown');
-      const bp = audioCtx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 600;
-      bp.Q.value = 0.8;
-      const baseGain = audioCtx.createGain();
-      baseGain.gain.value = 0.4;
-      src.connect(bp).connect(baseGain).connect(gainNode);
-
-      // Low warmth
-      const src2 = noiseSource('brown');
-      const lp = audioCtx.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.value = 180;
-      const warmGain = audioCtx.createGain();
-      warmGain.gain.value = 0.3;
-      src2.connect(lp).connect(warmGain).connect(gainNode);
-
-      // Random crackling transients
-      const crackleInterval = setInterval(() => {
-        if (audioCtx.state !== 'running') return;
-        const numCracks = Math.floor(Math.random() * 5) + 1;
-        for (let c = 0; c < numCracks; c++) {
-          setTimeout(() => {
-            const t = audioCtx.currentTime;
-            const cBuf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.03, audioCtx.sampleRate);
-            const cData = cBuf.getChannelData(0);
-            for (let i = 0; i < cData.length; i++) {
-              cData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / cData.length, 3);
-            }
-            const cSrc = audioCtx.createBufferSource();
-            cSrc.buffer = cBuf;
-            const cBp = audioCtx.createBiquadFilter();
-            cBp.type = 'bandpass';
-            cBp.frequency.value = 1500 + Math.random() * 3000;
-            cBp.Q.value = 2;
-            const cGain = audioCtx.createGain();
-            cGain.gain.setValueAtTime(0.15 + Math.random() * 0.2, t);
-            cGain.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
-            cSrc.connect(cBp).connect(cGain).connect(gainNode);
-            cSrc.start(t);
-            cSrc.stop(t + 0.05);
-          }, Math.random() * 400);
-        }
-      }, 120);
-      cleanups.push(() => clearInterval(crackleInterval));
-      break;
-    }
-    case 'birds': {
-      // Background gentle noise
-      const src = noiseSource('pink');
-      const hp = audioCtx.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.value = 2000;
-      const bgGain = audioCtx.createGain();
-      bgGain.gain.value = 0.06;
-      src.connect(hp).connect(bgGain).connect(gainNode);
-
-      // Synthetic chirps
-      const chirpInterval = setInterval(() => {
-        if (audioCtx.state !== 'running') return;
-        if (Math.random() > 0.6) return;
-        const numChirps = Math.floor(Math.random() * 3) + 1;
-        for (let ch = 0; ch < numChirps; ch++) {
-          setTimeout(() => {
-            const t = audioCtx.currentTime;
-            const baseFreq = 2000 + Math.random() * 3000;
-            // Each chirp is 2-4 notes
-            const noteCount = Math.floor(Math.random() * 3) + 2;
-            for (let n = 0; n < noteCount; n++) {
-              const noteTime = t + n * (0.06 + Math.random() * 0.08);
-              const osc = audioCtx.createOscillator();
-              osc.type = 'sine';
-              const freq = baseFreq * (0.8 + Math.random() * 0.5);
-              osc.frequency.setValueAtTime(freq, noteTime);
-              osc.frequency.exponentialRampToValueAtTime(freq * (0.7 + Math.random() * 0.6), noteTime + 0.05);
-              const g = audioCtx.createGain();
-              g.gain.setValueAtTime(0.001, noteTime);
-              g.gain.exponentialRampToValueAtTime(0.06 + Math.random() * 0.04, noteTime + 0.01);
-              g.gain.exponentialRampToValueAtTime(0.001, noteTime + 0.05 + Math.random() * 0.03);
-              osc.connect(g).connect(gainNode);
-              osc.start(noteTime);
-              osc.stop(noteTime + 0.1);
-            }
-          }, Math.random() * 600);
-        }
-      }, 800);
-      cleanups.push(() => clearInterval(chirpInterval));
-      break;
-    }
-    case 'creek': {
-      // High-pass filtered noise base
-      const src = noiseSource('white');
-      const hp = audioCtx.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.value = 2500;
-      const bp = audioCtx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 3500;
-      bp.Q.value = 0.3;
-      const creekGain = audioCtx.createGain();
-      creekGain.gain.value = 0.25;
-
-      // Babbling modulation
-      const lfo = audioCtx.createOscillator();
-      lfo.type = 'sine';
-      lfo.frequency.value = 2.5;
-      const lfoGain = audioCtx.createGain();
-      lfoGain.gain.value = 0.15;
-      lfo.connect(lfoGain).connect(creekGain.gain);
-      lfo.start();
-      sources.push(lfo);
-
-      src.connect(hp).connect(bp).connect(creekGain).connect(gainNode);
-
-      // Secondary babble layer
-      const src2 = noiseSource('pink');
-      const bp2 = audioCtx.createBiquadFilter();
-      bp2.type = 'bandpass';
-      bp2.frequency.value = 1800;
-      bp2.Q.value = 0.5;
-      const babbleGain = audioCtx.createGain();
-      babbleGain.gain.value = 0.15;
-      const lfo2 = audioCtx.createOscillator();
-      lfo2.type = 'sine';
-      lfo2.frequency.value = 3.8;
-      const lfoGain2 = audioCtx.createGain();
-      lfoGain2.gain.value = 0.1;
-      lfo2.connect(lfoGain2).connect(babbleGain.gain);
-      lfo2.start();
-      sources.push(lfo2);
-      src2.connect(bp2).connect(babbleGain).connect(gainNode);
-
-      // Occasional splash
-      const splashInterval = setInterval(() => {
-        if (audioCtx.state !== 'running') return;
-        if (Math.random() > 0.35) return;
-        const t = audioCtx.currentTime;
-        const sBuf = createNoiseBuffer('white');
-        const sSrc = audioCtx.createBufferSource();
-        sSrc.buffer = sBuf;
-        const sHp = audioCtx.createBiquadFilter();
-        sHp.type = 'highpass';
-        sHp.frequency.value = 3000;
-        const sGain = audioCtx.createGain();
-        sGain.gain.setValueAtTime(0.001, t);
-        sGain.gain.exponentialRampToValueAtTime(0.08, t + 0.02);
-        sGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-        sSrc.connect(sHp).connect(sGain).connect(gainNode);
-        sSrc.start(t);
-        sSrc.stop(t + 0.2);
-      }, 600);
-      cleanups.push(() => clearInterval(splashInterval));
-      break;
-    }
-    case 'fan': {
-      // Steady noise blend
-      const src = noiseSource('pink');
-      const lp = audioCtx.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.value = 1200;
-      const fanGain = audioCtx.createGain();
-      fanGain.gain.value = 0.6;
-      src.connect(lp).connect(fanGain).connect(gainNode);
-
-      // Brown noise layer for depth
-      const src2 = noiseSource('brown');
-      const lp2 = audioCtx.createBiquadFilter();
-      lp2.type = 'lowpass';
-      lp2.frequency.value = 400;
-      const depthGain = audioCtx.createGain();
-      depthGain.gain.value = 0.25;
-      src2.connect(lp2).connect(depthGain).connect(gainNode);
-
-      // Very subtle rotation modulation
-      const lfo = audioCtx.createOscillator();
-      lfo.type = 'sine';
-      lfo.frequency.value = 0.8;
-      const lfoGain = audioCtx.createGain();
-      lfoGain.gain.value = 0.04;
-      lfo.connect(lfoGain).connect(fanGain.gain);
-      lfo.start();
-      sources.push(lfo);
-      break;
-    }
-  }
-
-  return { sources, cleanups };
+/* --- Start a file-based sound (nature sounds) --- */
+function startSoundFromFile(id, gainNode, buffer) {
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.loop = true;
+  source.connect(gainNode);
+  source.start();
+  return { sources: [source], cleanups: [] };
 }
 
 /* ══════════════════════════════════════════════════════════
    SOUND STATE
    ══════════════════════════════════════════════════════════ */
-function startSound(id) {
+async function startSound(id) {
   ensureAudioCtx();
   if (soundNodes[id] && soundNodes[id].active) return;
 
@@ -992,13 +618,29 @@ function startSound(id) {
   gain.gain.setValueAtTime(vol / 100, audioCtx.currentTime);
   gain.connect(masterGain);
 
-  const { sources, cleanups } = createSoundGraph(id, gain);
-  sources.forEach(s => { try { s.start(); } catch(e) {} });
+  let result;
+
+  if (SYNTH_NOISE.includes(id)) {
+    // Synthesized noise (white, pink, brown)
+    result = createNoiseGraph(id, gain);
+    result.sources.forEach(s => { try { s.start(); } catch(e) {} });
+  } else if (SOUND_FILES[id]) {
+    // File-based nature sound
+    const buffer = await loadAudioBuffer(id);
+    if (!buffer) {
+      showToast(`Failed to load ${id} audio`);
+      try { gain.disconnect(); } catch(e) {}
+      return;
+    }
+    result = startSoundFromFile(id, gain, buffer);
+  } else {
+    return;
+  }
 
   soundNodes[id] = {
     gain,
-    sources,
-    cleanups,
+    sources: result.sources,
+    cleanups: result.cleanups,
     active: true,
     volume: vol,
   };
