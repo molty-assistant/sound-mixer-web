@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://molty-assistant.github.io/sound-mixer-web/sitemap.xml
