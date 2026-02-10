@@ -1,0 +1,21 @@
+{
+  "name": "Sound Mixer",
+  "short_name": "Sound Mixer",
+  "description": "Mix ambient sounds for sleep and focus. Rain, ocean, fireplace, white noise — blend your perfect soundscape.",
+  "start_url": "/sound-mixer-web/",
+  "scope": "/sound-mixer-web/",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#7c3aed",
+  "orientation": "any",
+  "categories": ["health", "lifestyle", "utilities"],
+  "lang": "en-GB",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

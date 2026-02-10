@@ -6,6 +6,11 @@
 <title>Sound Mixer — Ambient sounds for sleep &amp; focus</title>
 <meta name="description" content="Mix ambient sounds for sleep and focus. Rain, ocean, fireplace, white noise — blend your perfect soundscape. Free, no downloads, runs in your browser.">
 <link rel="canonical" href="https://molty-assistant.github.io/sound-mixer-web/">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#7c3aed">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sound Mixer">
 
 <!-- Open Graph -->
 <meta property="og:title" content="Sound Mixer — Ambient sounds for sleep & focus">
@@ -929,6 +934,13 @@ document.addEventListener('touchstart', function unlock() {
   ensureAudioCtx();
   document.removeEventListener('touchstart', unlock);
 }, { once: true });
+
+/* ══════════════════════════════════════════════════════════
+   SERVICE WORKER (PWA offline support)
+   ══════════════════════════════════════════════════════════ */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
 </script>
 </body>
 </html>
