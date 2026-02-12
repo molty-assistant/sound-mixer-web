@@ -169,6 +169,69 @@ body {
 
 .timer-display.hidden { display: none; }
 
+.timer-cancel {
+  background: none;
+  border: 1px solid #ef4444;
+  color: #ef4444;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.timer-cancel:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.timer-cancel.hidden { display: none; }
+
+/* ══════════════════════════════════════════════════════════
+   SHARE MIX BUTTON
+   ══════════════════════════════════════════════════════════ */
+.share-bar {
+  max-width: 900px;
+  margin: 0 auto 20px;
+  display: flex;
+  justify-content: center;
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+  transition: all 0.3s ease;
+}
+
+.share-bar.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.share-btn {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 40px;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-family: var(--font);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-btn:hover {
+  background: var(--accent);
+  color: white;
+}
+
+.share-btn:active {
+  transform: scale(0.97);
+}
+
 /* ══════════════════════════════════════════════════════════
    PRESETS
    ══════════════════════════════════════════════════════════ */
@@ -472,11 +535,17 @@ input[type="range"]::-moz-range-thumb:hover {
       <option value="0">Off</option>
       <option value="15">15 min</option>
       <option value="30">30 min</option>
+      <option value="45">45 min</option>
       <option value="60">1 hour</option>
       <option value="120">2 hours</option>
     </select>
     <span class="timer-display hidden" id="timerDisplay">00:00</span>
+    <button class="timer-cancel hidden" id="timerCancel">✕</button>
   </div>
+</div>
+
+<div class="share-bar" id="shareBar">
+  <button class="share-btn" id="shareBtn">🔗 Share Mix</button>
 </div>
 
 <div class="presets" id="presets">
@@ -785,33 +854,32 @@ document.getElementById('masterVolume').addEventListener('input', (e) => {
 });
 
 /* ══════════════════════════════════════════════════════════
-   SLEEP TIMER
+   SLEEP TIMER (enhanced with cancel + smooth fade)
    ══════════════════════════════════════════════════════════ */
 let timerInterval = null;
 let timerEndTime = null;
 let timerFading = false;
+let preFadeMasterVolume = null;
 
 const timerSelect = document.getElementById('timerSelect');
 const timerDisplay = document.getElementById('timerDisplay');
+const timerCancel = document.getElementById('timerCancel');
 
-timerSelect.addEventListener('change', () => {
-  const minutes = parseInt(timerSelect.value);
+function startTimer(minutes) {
   clearTimer();
 
   if (minutes === 0) {
     timerDisplay.classList.add('hidden');
-    // Restore master volume if was fading
-    if (timerFading && masterGain) {
-      const masterSlider = document.getElementById('masterVolume');
-      masterGain.gain.setTargetAtTime(parseInt(masterSlider.value) / 100, audioCtx.currentTime, 0.5);
-      timerFading = false;
-    }
+    timerCancel.classList.add('hidden');
+    restoreMasterVolume();
     return;
   }
 
   timerEndTime = Date.now() + minutes * 60 * 1000;
   timerDisplay.classList.remove('hidden');
+  timerCancel.classList.remove('hidden');
   timerFading = false;
+  preFadeMasterVolume = null;
 
   timerInterval = setInterval(() => {
     const remaining = timerEndTime - Date.now();
@@ -819,7 +887,11 @@ timerSelect.addEventListener('change', () => {
       stopAll();
       clearTimer();
       timerDisplay.classList.add('hidden');
+      timerCancel.classList.add('hidden');
       timerSelect.value = '0';
+      // Reset master volume to slider value (so next session isn't muted)
+      restoreMasterVolume();
+      showToast('Sleep timer ended — goodnight 🌙');
       return;
     }
 
@@ -831,9 +903,37 @@ timerSelect.addEventListener('change', () => {
     // Fade out in last 30 seconds
     if (remaining <= 30000 && !timerFading && masterGain) {
       timerFading = true;
-      masterGain.gain.setTargetAtTime(0, audioCtx.currentTime, 8); // exponential fade
+      // Save master volume before fading
+      preFadeMasterVolume = parseInt(document.getElementById('masterVolume').value) / 100;
+      // Gradual linear fade over 30 seconds
+      const t = audioCtx.currentTime;
+      masterGain.gain.setValueAtTime(masterGain.gain.value, t);
+      masterGain.gain.linearRampToValueAtTime(0, t + (remaining / 1000));
     }
   }, 250);
+}
+
+function restoreMasterVolume() {
+  if (timerFading && masterGain && audioCtx) {
+    const vol = preFadeMasterVolume !== null ? preFadeMasterVolume : parseInt(document.getElementById('masterVolume').value) / 100;
+    masterGain.gain.cancelScheduledValues(audioCtx.currentTime);
+    masterGain.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.3);
+    timerFading = false;
+    preFadeMasterVolume = null;
+  }
+}
+
+timerSelect.addEventListener('change', () => {
+  startTimer(parseInt(timerSelect.value));
+});
+
+timerCancel.addEventListener('click', () => {
+  clearTimer();
+  timerDisplay.classList.add('hidden');
+  timerCancel.classList.add('hidden');
+  timerSelect.value = '0';
+  restoreMasterVolume();
+  showToast('Timer cancelled');
 });
 
 function clearTimer() {
@@ -926,6 +1026,141 @@ function showToast(msg) {
   toast.classList.add('show');
   setTimeout(() => toast.classList.remove('show'), 2000);
 }
+
+/* ══════════════════════════════════════════════════════════
+   SHARE MIX (URL hash encoding/decoding)
+   ══════════════════════════════════════════════════════════ */
+const shareBar = document.getElementById('shareBar');
+const shareBtn = document.getElementById('shareBtn');
+
+function getActiveMix() {
+  const mix = {};
+  SOUNDS.forEach(s => {
+    const node = soundNodes[s.id];
+    if (node && node.active) {
+      mix[s.id] = node.volume;
+    }
+  });
+  return mix;
+}
+
+function encodeMixToHash(mix) {
+  return Object.entries(mix)
+    .map(([id, vol]) => `${id}=${vol}`)
+    .join(',');
+}
+
+function decodeMixFromHash(hash) {
+  const mix = {};
+  if (!hash || hash.length < 2) return mix;
+  const str = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (!str) return mix;
+  str.split(',').forEach(pair => {
+    const [id, volStr] = pair.split('=');
+    const vol = parseInt(volStr);
+    if (id && !isNaN(vol) && vol >= 0 && vol <= 100) {
+      // Verify it's a valid sound id
+      if (SOUNDS.some(s => s.id === id)) {
+        mix[id] = vol;
+      }
+    }
+  });
+  return mix;
+}
+
+function updateShareBarVisibility() {
+  const mix = getActiveMix();
+  const hasActive = Object.keys(mix).length > 0;
+  shareBar.classList.toggle('visible', hasActive);
+}
+
+// Update URL hash when mix changes (without triggering hashchange reload)
+function updateUrlHash() {
+  const mix = getActiveMix();
+  if (Object.keys(mix).length > 0) {
+    const hash = '#' + encodeMixToHash(mix);
+    history.replaceState(null, '', hash);
+  } else {
+    // Remove hash without causing page scroll
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+}
+
+// Patch startSound/stopSound/setVolume to update share bar and hash
+const _origStartSound = startSound;
+startSound = async function(id) {
+  await _origStartSound(id);
+  updateShareBarVisibility();
+  updateUrlHash();
+};
+
+const _origStopSound = stopSound;
+stopSound = function(id) {
+  _origStopSound(id);
+  updateShareBarVisibility();
+  updateUrlHash();
+};
+
+const _origSetVolume = setVolume;
+setVolume = function(id, vol) {
+  _origSetVolume(id, vol);
+  // Debounce hash update on volume change
+  clearTimeout(setVolume._debounce);
+  setVolume._debounce = setTimeout(updateUrlHash, 300);
+};
+
+shareBtn.addEventListener('click', () => {
+  const mix = getActiveMix();
+  if (Object.keys(mix).length === 0) {
+    showToast('No sounds active to share');
+    return;
+  }
+  const url = window.location.origin + window.location.pathname + '#' + encodeMixToHash(mix);
+  navigator.clipboard.writeText(url).then(() => {
+    showToast('Link copied! 🔗');
+  }).catch(() => {
+    // Fallback for older browsers
+    const ta = document.createElement('textarea');
+    ta.value = url;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('Link copied! 🔗');
+  });
+});
+
+// On page load: restore mix from URL hash
+function loadMixFromUrl() {
+  const hash = window.location.hash;
+  if (!hash || hash.length < 2) return;
+  const mix = decodeMixFromHash(hash);
+  if (Object.keys(mix).length === 0) return;
+
+  // Need a user gesture on mobile, so we show a play bar
+  // But for desktop, we can try auto-playing
+  ensureAudioCtx();
+
+  Object.entries(mix).forEach(([soundId, vol]) => {
+    const slider = document.getElementById(`slider-${soundId}`);
+    const volLabel = document.getElementById(`vol-${soundId}`);
+    if (slider) {
+      slider.value = vol;
+      volLabel.textContent = vol;
+    }
+    _origSetVolume(soundId, vol);
+    _origStartSound(soundId).then(() => {
+      updateShareBarVisibility();
+    });
+  });
+
+  showToast('Shared mix loaded ✓');
+}
+
+// Defer URL load slightly so DOM is ready
+setTimeout(loadMixFromUrl, 100);
 
 /* ══════════════════════════════════════════════════════════
    iOS AUDIO UNLOCK
